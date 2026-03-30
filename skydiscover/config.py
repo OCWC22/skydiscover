@@ -483,6 +483,16 @@ class GEPANativeDatabaseConfig(DatabaseConfig):
     random_seed: Optional[int] = 42
 
 
+@dataclass
+class GEAKHybridDatabaseConfig(AdaEvolveDatabaseConfig):
+    """GEAK Hybrid: AdaEvolve outer loop + GEAK inner optimization loop."""
+
+    inner_loop_budget: int = 3
+    max_invalid_rounds: int = 2
+    accept_improvement_epsilon: float = 1e-6
+    include_isa_knowledge: bool = True
+
+
 _DB_CONFIG_BY_TYPE: Dict[str, type] = {
     "evox": EvoxDatabaseConfig,
     "beam_search": BeamSearchDatabaseConfig,
@@ -491,6 +501,7 @@ _DB_CONFIG_BY_TYPE: Dict[str, type] = {
     "adaevolve": AdaEvolveDatabaseConfig,
     "openevolve_native": OpenEvolveNativeDatabaseConfig,
     "gepa_native": GEPANativeDatabaseConfig,
+    "geak_hybrid": GEAKHybridDatabaseConfig,
 }
 
 

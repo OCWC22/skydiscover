@@ -20,6 +20,7 @@ from skydiscover.search.default_discovery_controller import (
 )
 from skydiscover.search.evox.controller import CoEvolutionController
 from skydiscover.search.evox.database.search_strategy_db import SearchStrategyDatabase
+from skydiscover.search.geak_hybrid.controller import GEAKHybridController
 from skydiscover.search.gepa_native.controller import GEPANativeController
 from skydiscover.search.gepa_native.database import GEPANativeDatabase
 from skydiscover.search.openevolve_native.database import OpenEvolveNativeDatabase
@@ -69,3 +70,7 @@ register_database("evox_meta", SearchStrategyDatabase)
 # GEPA Native: guided evolution with acceptance gating and merge
 register_database("gepa_native", GEPANativeDatabase)
 register_controller("gepa_native", GEPANativeController)
+
+# GEAK Hybrid: AdaEvolve outer loop + GEAK inner optimization
+register_database("geak_hybrid", AdaEvolveDatabase)
+register_controller("geak_hybrid", GEAKHybridController)

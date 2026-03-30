@@ -1,0 +1,40 @@
+# GEAK Hybrid: AdaEvolve outer loop + GEAK-style inner kernel optimization.
+#
+# Each outer iteration runs a bounded inner loop of:
+#   Router → Reviewer → Editor → Evaluate → Interpreter
+# before committing the best candidate to the population.
+#
+# Usage:
+#   uv run skydiscover-run initial_program.py evaluator.py \
+#     --config configs/geak_hybrid.yaml --search geak_hybrid -i 100
+
+max_iterations: 100
+checkpoint_interval: 1
+log_level: "INFO"
+
+llm:
+  models:
+    - name: "gpt-5"
+      weight: 1.0
+  temperature: 1.0
+  max_tokens: 32000
+  timeout: 600
+
+search:
+  type: "geak_hybrid"
+  database:
+    # --- AdaEvolve outer loop settings (inherited) ---
+    num_islands: 2
+    decay: 0.9
+    intensity_min: 0.15
+    intensity_max: 0.5
+    migration_interval: 15
+    migration_count: 5
+    use_paradigm_breakthrough: true
+    use_dynamic_islands: true
+
+    # --- GEAK inner loop settings ---
+    inner_loop_budget: 3       # max Router→...→Interpreter rounds per outer iteration
+    max_invalid_rounds: 2      # stop inner loop after this many failed rounds
+    accept_improvement_epsilon: 0.000001  # minimum score delta to accept as improvement
+    include_isa_knowledge: true
