@@ -37,4 +37,3 @@ search:
     inner_loop_budget: 3       # max Router→...→Interpreter rounds per outer iteration
     max_invalid_rounds: 2      # stop inner loop after this many failed rounds
     accept_improvement_epsilon: 0.000001  # minimum score delta to accept as improvement
-    include_isa_knowledge: true

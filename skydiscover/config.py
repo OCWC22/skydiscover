@@ -490,7 +490,6 @@ class GEAKHybridDatabaseConfig(AdaEvolveDatabaseConfig):
     inner_loop_budget: int = 3
     max_invalid_rounds: int = 2
     accept_improvement_epsilon: float = 1e-6
-    include_isa_knowledge: bool = True
 
 
 _DB_CONFIG_BY_TYPE: Dict[str, type] = {

@@ -80,7 +80,6 @@ class GEAKHybridController(AdaEvolveController):
         self.inner_loop_budget = getattr(db_config, "inner_loop_budget", 3)
         self.max_invalid_rounds = getattr(db_config, "max_invalid_rounds", 2)
         self.accept_eps = getattr(db_config, "accept_improvement_epsilon", 1e-6)
-        self.include_isa = getattr(db_config, "include_isa_knowledge", True)
 
         if self.inner_loop_budget < 1:
             raise ValueError(f"inner_loop_budget must be >= 1, got {self.inner_loop_budget}")
@@ -127,6 +126,10 @@ class GEAKHybridController(AdaEvolveController):
                     parent = best
                     base_score = get_score(best.metrics) if best.metrics else 0.0
 
+            # Record paradigm usage (mirrors AdaEvolve._generate_child)
+            if paradigm:
+                self.database.use_paradigm()
+
             # Build tracking info
             parent_info = (parent_label, parent.id)
             context_info = [
@@ -137,13 +140,17 @@ class GEAKHybridController(AdaEvolveController):
             ]
 
             # === GEAK INNER LOOP ===
+            # Track a full working candidate state across rounds
             working_solution = parent.solution
+            working_metrics = dict(parent.metrics) if parent.metrics else {}
             working_score = base_score
             best_result: Optional[SerializableResult] = None
             best_score = -float("inf")
             invalid_rounds = 0
             traces: List[GEAKRoundTrace] = []
             last_interpretation: Optional[Interpretation] = None
+            # The original DB parent — always used for lineage tracking
+            persisted_parent = parent
 
             for round_idx in range(self.inner_loop_budget):
                 if self.shutdown_event.is_set():
@@ -153,19 +160,29 @@ class GEAKHybridController(AdaEvolveController):
 
                 # --- 1. ROUTER: identify bottleneck ---
                 route = await self._geak_router(
-                    working_solution, parent.metrics or {}, paradigm, last_interpretation,
+                    working_solution, working_metrics, paradigm, last_interpretation,
                 )
                 trace.route_strategy = route.strategy
 
                 # --- 2. REVIEWER: form hypothesis + checks ---
                 review = await self._geak_reviewer(
-                    working_solution, route, parent.metrics or {},
+                    working_solution, route, working_metrics,
                 )
 
                 # --- 3. EDITOR: generate code via normal LLM + evaluate ---
-                # Build the prompt with GEAK guidance injected
+                # Build a round-local Program representing the current working state.
+                # This is critical: _execute_generation applies diffs against
+                # round_parent.solution, so it must reflect the latest accepted code.
+                round_parent = Program(
+                    id=persisted_parent.id,
+                    solution=working_solution,
+                    metrics=working_metrics,
+                    generation=persisted_parent.generation,
+                    language=getattr(persisted_parent, 'language', None),
+                )
+
                 context = {
-                    "program_metrics": parent.metrics,
+                    "program_metrics": working_metrics,
                     "other_context_programs": context_programs_dict,
                     "paradigm": paradigm,
                     "siblings": [],
@@ -176,10 +193,7 @@ class GEAKHybridController(AdaEvolveController):
                         context[k] = v
 
                 prompt = self.context_builder.build_prompt(
-                    {parent_label: parent} if round_idx == 0 else {parent_label: Program(
-                        id=parent.id, solution=working_solution,
-                        metrics=parent.metrics, generation=parent.generation,
-                    )},
+                    {parent_label: round_parent},
                     context,
                 )
 
@@ -188,9 +202,10 @@ class GEAKHybridController(AdaEvolveController):
                 if geak_guidance:
                     prompt["user"] = prompt["user"] + "\n\n" + geak_guidance
 
-                # Generate + evaluate using inherited machinery
+                # Generate + evaluate using round_parent so diffs apply to
+                # the working solution, but track lineage to persisted_parent
                 result = await self._execute_generation(
-                    parent, prompt, iteration,
+                    round_parent, prompt, iteration,
                     parent_info=parent_info,
                     context_info=context_info,
                     context_program_ids=context_program_ids,
@@ -216,6 +231,7 @@ class GEAKHybridController(AdaEvolveController):
 
                     if improved_over_working and result.child_program_dict.get("solution"):
                         working_solution = result.child_program_dict["solution"]
+                        working_metrics = result.child_program_dict.get("metrics", working_metrics)
                         working_score = candidate_score
                         trace.accepted = True
 
@@ -242,7 +258,7 @@ class GEAKHybridController(AdaEvolveController):
                     )
                     break
 
-                if invalid_rounds > self.max_invalid_rounds:
+                if invalid_rounds >= self.max_invalid_rounds:
                     logger.info(f"GEAK: {invalid_rounds} invalid rounds, stopping inner loop")
                     break
 
