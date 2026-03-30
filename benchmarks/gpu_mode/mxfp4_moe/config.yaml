@@ -29,7 +29,9 @@ prompt:
     - **Execution model**: Wavefront64 (64 lanes per wave) — NOT 32 like NVIDIA warps
     - **Matrix cores**: MFMA instructions with block exponent scaling
       - `V_MFMA_SCALE_F32_16X16X128_F8F6F4` for scaled FP4/FP6/FP8 GEMM
-    - **Shared memory**: LDS (Local Data Share), 64 KB per CU
+    - **Shared memory**: LDS (Local Data Share), 160 KB per CU (expanded from cDNA3)
+      - 256 B/clk read bandwidth
+      - 128-bit per-lane GLOBAL_LOAD_LDS transfer width (4x wider than cDNA3)
 
     ### MXFP4 Data Format (OCP Microscaling FP4)
     - **Encoding**: E2M1 (1 sign + 2 exponent + 1 mantissa), bias=1
@@ -100,18 +102,26 @@ prompt:
     ### Optimization Opportunities
 
     Key areas to optimize (ordered by expected impact):
-    1. **Fused dequant+GEMM**: Avoid materializing full FP16/FP32 weight matrices.
-       Unpack MXFP4 codes inline during tiled matrix multiply.
+    1. **Fused dequant+GEMM via MFMA Scale**: The cDNA4 MFMA scale instructions
+       (`V_MFMA_SCALE_F32_16X16X128_F8F6F4`) perform dequantization and matrix
+       multiplication in a SINGLE hardware instruction. This is the ultimate target —
+       avoid materializing dequantized weight matrices entirely.
     2. **Expert batching**: Instead of looping over experts sequentially, batch tokens
        by expert and run grouped GEMM or use permute+scatter patterns.
     3. **LDS tiling**: Use shared memory (LDS) for weight tiles and activation reuse.
        cDNA4 has 64 KB LDS per CU — tile to maximize reuse before going to HBM.
     4. **Wavefront-aware scheduling**: Use 64-lane wavefronts for coalesced memory access.
        Tile dimensions should be multiples of 64 for full wavefront utilization.
+       Prefer `mfma_16x16` over `mfma_32x32` — it outperforms even at large tile sizes.
+       Optimal tile: 256x256 with 512 threads (per AMD's cDNA4 GEMM optimization guide).
     5. **Memory coalescing**: Pack memory accesses so consecutive threads read
        consecutive bytes. The uint8 packed format naturally coalesces for nibble extraction.
-    6. **SiLU fusion**: Fuse the SiLU activation into the first GEMM epilogue.
-    7. **Gate-weighted accumulation**: Fuse gate multiplication into the output write-back.
+    6. **LDS swizzling**: Use XOR-based swizzle patterns to avoid LDS bank conflicts.
+       LDS has 32 banks × 4 bytes; naive access to 32-element MXFP4 blocks causes conflicts.
+    7. **SiLU fusion**: Fuse the SiLU activation into the first GEMM epilogue.
+    8. **Gate-weighted accumulation**: Fuse gate multiplication into the output write-back.
+    9. **Reference: AMD AITER patterns**: AMD's production AITER library uses batched
+       expert execution with block-scale dequant for fused MoE — study that pattern.
 
     ### Rules
     - All input tensors are already on your CUDA device.
