@@ -1,0 +1,142 @@
+# GPU Mode: MXFP4 Mixture-of-Experts (MoE) Kernel — AMD Instinct MI355X (cDNA4)
+
+max_iterations: 100
+checkpoint_interval: 1
+log_level: "INFO"
+
+llm:
+  models:
+    - name: "gpt-5"
+      weight: 1.0
+  api_base: https://api.openai.com/v1
+  temperature: 1.0
+  max_tokens: 32000
+  timeout: 600
+
+prompt:
+  system_message: |
+    You are an expert GPU kernel engineer optimizing for AMD Instinct MI355X (cDNA4 architecture).
+
+    ## Task: MXFP4 Mixture-of-Experts Fused Kernel
+
+    Implement a high-performance fused MoE forward pass that dequantizes MXFP4-packed expert weights
+    and computes the sparse MoE FFN in a single optimized pipeline.
+
+    ### Hardware Target
+    - **GPU**: AMD Instinct MI355X (cDNA4 architecture)
+    - **Compute**: 9.2 PFLOPS FP4 peak, 2.3 PFLOPS FP16 peak
+    - **Memory**: 288 GB HBM3E, 8 TB/s bandwidth
+    - **Execution model**: Wavefront64 (64 lanes per wave) — NOT 32 like NVIDIA warps
+    - **Matrix cores**: MFMA instructions with block exponent scaling
+      - `V_MFMA_SCALE_F32_16X16X128_F8F6F4` for scaled FP4/FP6/FP8 GEMM
+    - **Shared memory**: LDS (Local Data Share), 64 KB per CU
+
+    ### MXFP4 Data Format (OCP Microscaling FP4)
+    - **Encoding**: E2M1 (1 sign + 2 exponent + 1 mantissa), bias=1
+    - **Packing**: Two 4-bit codes per uint8 byte (low nibble = even index, high nibble = odd index)
+    - **Block scaling**: One E8M0 shared exponent (power-of-two scale) per 32 contiguous elements
+    - **FP4 E2M1 lookup table** (code → value):
+      ```
+      0→+0.0  1→+0.5  2→+1.0  3→+1.5  4→+2.0  5→+3.0  6→+4.0  7→+6.0
+      8→-0.0  9→-0.5 10→-1.0 11→-1.5 12→-2.0 13→-3.0 14→-4.0 15→-6.0
+      ```
+
+    ### MoE Forward Pass Algorithm
+    Given input `x` of shape `[T, H]` in bfloat16:
+
+    1. **Router**: `logits = x @ router_weight.T` → top-k experts per token → softmax gates
+    2. **Group**: collect tokens assigned to each expert
+    3. **Expert FFN** (for each active expert):
+       - Dequantize W1 from MXFP4: unpack nibbles → LUT lookup → scale by per-block factor
+       - Dequantize W2 from MXFP4: same process
+       - `hidden = SiLU(x_selected @ W1)` — W1 is `[H, I]`
+       - `y = hidden @ W2` — W2 is `[I, H]`
+    4. **Combine**: weighted sum by gate scores → output `[T, H]` bfloat16
+
+    ### Data Contract
+
+    ```python
+    from reference import MoEConfig
+
+    @dataclass
+    class MoEConfig:
+        num_tokens: int
+        hidden_dim: int          # H
+        intermediate_dim: int    # I
+        num_experts: int         # E
+        top_k: int               # K
+        block_size: int          # 32 (fixed)
+        router_weight: Tensor    # [E, H] bf16
+        w1_packed: Tensor        # [E, H, I//2] uint8  — MXFP4 packed
+        w1_scales: Tensor        # [E, H, I//32] float32 — per-block scales
+        w2_packed: Tensor        # [E, I, H//2] uint8  — MXFP4 packed
+        w2_scales: Tensor        # [E, I, H//32] float32 — per-block scales
+    ```
+
+    ### Function Signature
+
+    ```python
+    def custom_kernel(data: Tuple[MoEConfig, torch.Tensor]) -> torch.Tensor:
+        config, x = data   # x: [T, H] bf16
+        # ... your implementation ...
+        return output       # [T, H] bf16
+    ```
+
+    ### Test and Benchmark Configurations
+
+    Common parameters across all cases:
+      - block_size = 32 (OCP MX standard)
+
+    Correctness check cases:
+      - T=16,  H=1024, I=4096,  E=8,  K=2
+      - T=32,  H=2048, I=8192,  E=8,  K=2
+      - T=64,  H=4096, I=14336, E=16, K=2
+      - T=64,  H=4096, I=14336, E=16, K=4
+
+    Performance benchmark cases (optimize runtime for these):
+      - T=128, H=4096, I=14336, E=16, K=2
+      - T=256, H=4096, I=14336, E=16, K=2
+
+    ### Optimization Opportunities
+
+    Key areas to optimize (ordered by expected impact):
+    1. **Fused dequant+GEMM**: Avoid materializing full FP16/FP32 weight matrices.
+       Unpack MXFP4 codes inline during tiled matrix multiply.
+    2. **Expert batching**: Instead of looping over experts sequentially, batch tokens
+       by expert and run grouped GEMM or use permute+scatter patterns.
+    3. **LDS tiling**: Use shared memory (LDS) for weight tiles and activation reuse.
+       cDNA4 has 64 KB LDS per CU — tile to maximize reuse before going to HBM.
+    4. **Wavefront-aware scheduling**: Use 64-lane wavefronts for coalesced memory access.
+       Tile dimensions should be multiples of 64 for full wavefront utilization.
+    5. **Memory coalescing**: Pack memory accesses so consecutive threads read
+       consecutive bytes. The uint8 packed format naturally coalesces for nibble extraction.
+    6. **SiLU fusion**: Fuse the SiLU activation into the first GEMM epilogue.
+    7. **Gate-weighted accumulation**: Fuse gate multiplication into the output write-back.
+
+    ### Rules
+    - All input tensors are already on your CUDA device.
+    - All weights are stored in MXFP4 format as described above.
+    - Activations and router weights are in bfloat16.
+    - Define all of your code in one final ```python ``` block.
+    - The entrypoint to your code must be named 'custom_kernel'.
+    - You may use Triton, PyTorch, or `torch.compile()`.
+    - Do NOT use CUDA-only intrinsics or NVIDIA warp-size assumptions (warp_size=32).
+    - Wavefront size on cDNA4 is 64, not 32.
+    - Do NOT import or assume `reference.MoEConfig` is mutable — treat it as read-only.
+
+    Important Triton rules (triton >= 3.1):
+    - `tl.load` does not have a `dtype` argument. Never use `tl.load(..., dtype=...)`.
+    - Triton dtypes are not callable: never write `tl.float16(1.0)` or `tl.float32(0.0)`.
+    - `tl.arange(start, end)`: range length must be power-of-2; start, end must be `tl.constexpr`.
+    - `tl.range(start, end, step, num_stages)`: num_stages must be `tl.constexpr`.
+    - Do not use scalar indexing like `x[0]` inside Triton kernels.
+
+evaluator:
+  timeout: 600
+  max_retries: 3
+  cascade_evaluation: true
+  cascade_thresholds: [0.4, 0.3]
+
+diff_based_generation: true
+max_solution_length: 60000
+random_seed: 42

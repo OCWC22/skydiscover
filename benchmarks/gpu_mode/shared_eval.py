@@ -196,7 +196,18 @@ def _evaluate_modal(submission_code):
         "T4": eval_triton_t4,
         "H200": eval_triton_h200,
     }
-    eval_fn = gpu_fns.get(MODAL_GPU, eval_triton_h100)
+    eval_fn = gpu_fns.get(MODAL_GPU)
+    if eval_fn is None:
+        supported = ", ".join(sorted(gpu_fns.keys()))
+        return EvaluationResult(
+            metrics={"combined_score": 0.0, "correctness": 0.0},
+            artifacts={
+                "error": (f"Unsupported GPUMODE_MODAL_GPU={MODAL_GPU!r}. "
+                          f"Supported remote GPUs: {supported}. "
+                          f"For AMD MI355X, use local ROCm evaluation instead."),
+                "failure_stage": "modal_setup",
+            },
+        )
 
     ref_code = getattr(reference, 'MODAL_REFERENCE_CODE', None)
     if ref_code is None:

@@ -48,7 +48,7 @@ uv run skydiscover-run benchmarks/math/circle_packing/initial_program.py \
 |-----------|--------|-------|---------------|
 | [`math/`](math/) | Math | 14 | Circle packing, Erdos problems, autocorrelation inequalities, geometric optimization |
 | [`ADRS/`](ADRS/) | Systems | 5 | Cloud scheduling, MoE load balancing, model placement, column reordering, transaction scheduling |
-| [`gpu_mode/`](gpu_mode/) | GPU | 4 | Triton kernel optimization (vecadd, grayscale, trimul, MLA decode) |
+| [`gpu_mode/`](gpu_mode/) | GPU | 5 | Triton kernel optimization (vecadd, grayscale, trimul, MLA decode, MXFP4 MoE) |
 | [`frontier-cs-eval/`](frontier-cs-eval/) | Algorithms | 172 | Competitive programming (Frontier-CS benchmark, Docker judge) |
 | [`arc_benchmark/`](arc_benchmark/) | Reasoning | — | ARC-AGI visual reasoning tasks |
 | [`ale_bench/`](ale_bench/) | Algorithms | 10 | Algorithmic contest problems (C++, ALE-Bench) |

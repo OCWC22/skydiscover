@@ -10,6 +10,7 @@ Evolve high-performance GPU kernels using SkyDiscover. Each benchmark provides a
 | [`grayscale`](grayscale/) | RGB → Grayscale (`0.2989R + 0.5870G + 0.1140B`) | rtol/atol=1e-4 | H100 |
 | [`trimul`](trimul/) | Triangle multiplicative update (AlphaFold3/Chai/Protenix) | rtol/atol=0.02 | H100 |
 | [`mla_decode`](mla_decode/) | Multi-head latent attention decode (DeepSeek-V2/V3) | rtol/atol=0.06 (bfloat16) | **H200** |
+| [`mxfp4_moe`](mxfp4_moe/) | MXFP4 Mixture-of-Experts fused kernel (sparse FFN) | rtol/atol=0.03 | **MI355X** (ROCm) |
 
 ## Quick Start
 
@@ -33,6 +34,8 @@ GPUMODE_USE_MODAL=true GPUMODE_MODAL_GPU=H100 \
 ```
 
 > **Note:** `mla_decode` requires `GPUMODE_MODAL_GPU=H200` — H100 (80GB) does not have enough VRAM.
+>
+> **Note:** `mxfp4_moe` targets AMD MI355X (cDNA4) and runs locally on ROCm only. Modal remote evaluation is not supported for AMD GPUs.
 
 ## Writing a Submission
 
@@ -81,7 +84,8 @@ gpu_mode/
 ├── vecadd/              # Float16 vector addition
 ├── grayscale/           # RGB → grayscale conversion
 ├── trimul/              # Triangle multiplicative update
-└── mla_decode/          # MLA decode (DeepSeek attention)
+├── mla_decode/          # MLA decode (DeepSeek attention)
+├── mxfp4_moe/           # MXFP4 MoE fused kernel (AMD MI355X)
 
 # Each benchmark contains:
 #   initial_program.py   — starting kernel
