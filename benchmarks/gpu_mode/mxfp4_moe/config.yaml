@@ -99,40 +99,56 @@ prompt:
       - T=128, H=4096, I=14336, E=16, K=2
       - T=256, H=4096, I=14336, E=16, K=2
 
-    ### Optimization Opportunities
+    ### Optimization Opportunities (Triton-achievable on cDNA4)
+
+    These optimizations are all expressible in Triton on ROCm. Triton compiles to
+    AMD GCN/CDNA ISA automatically — you do NOT write ISA instructions directly.
+    The Triton compiler will select MFMA instructions when you use `tl.dot()`.
 
     Key areas to optimize (ordered by expected impact):
-    1. **Fused dequant+GEMM via MFMA Scale**: The cDNA4 MFMA scale instructions
-       (`V_MFMA_SCALE_F32_16X16X128_F8F6F4`) perform dequantization and matrix
-       multiplication in a SINGLE hardware instruction. This is the ultimate target —
-       avoid materializing dequantized weight matrices entirely.
+    1. **Fused dequant+GEMM via tl.dot()**: Triton's `tl.dot()` maps to cDNA4 MFMA
+       instructions (V_MFMA_F32_16x16x128_F8F6F4 or V_MFMA_F32_32x32x64_F8F6F4).
+       Unpack MXFP4 nibbles and apply block scales inline within tiled matmul loops
+       to avoid materializing full dequantized weight matrices.
     2. **Expert batching**: Instead of looping over experts sequentially, batch tokens
        by expert and run grouped GEMM or use permute+scatter patterns.
     3. **LDS tiling**: Use shared memory (LDS) for weight tiles and activation reuse.
-       cDNA4 has 64 KB LDS per CU — tile to maximize reuse before going to HBM.
-    4. **Wavefront-aware scheduling**: Use 64-lane wavefronts for coalesced memory access.
-       Tile dimensions should be multiples of 64 for full wavefront utilization.
-       Prefer `mfma_16x16` over `mfma_32x32` — it outperforms even at large tile sizes.
-       Optimal tile: 256x256 with 512 threads (per AMD's cDNA4 GEMM optimization guide).
+       cDNA4 has 160 KB LDS per CU with 256 B/clk read bandwidth. Triton manages
+       LDS automatically via `num_stages` parameter for software pipelining.
+    4. **Wavefront-aware tiling**: cDNA4 uses 64-lane wavefronts. BLOCK dimensions
+       should be multiples of 64 for full utilization. For MFMA:
+       - 16x16 tile: K=128 per instruction (16-32 cycles, best for FP4)
+       - 32x32 tile: K=64 per instruction (32-64 cycles)
+       The 16x16 tile has higher throughput for FP4 workloads.
     5. **Memory coalescing**: Pack memory accesses so consecutive threads read
        consecutive bytes. The uint8 packed format naturally coalesces for nibble extraction.
-    6. **LDS swizzling**: Use XOR-based swizzle patterns to avoid LDS bank conflicts.
-       LDS has 32 banks × 4 bytes; naive access to 32-element MXFP4 blocks causes conflicts.
+       Use 128-bit vectorized loads (cDNA4 GLOBAL_LOAD_LDS is 128-bit per lane).
+    6. **Software pipelining**: Use Triton's `num_stages` parameter:
+       - `num_stages=0` for single GEMM kernels
+       - `num_stages=1` for two fused GEMMs (like SiLU(x@W1) @ W2)
+       This overlaps memory loads with MFMA compute.
     7. **SiLU fusion**: Fuse the SiLU activation into the first GEMM epilogue.
+       Compute SiLU in-register between the two matmuls to avoid a memory round-trip.
     8. **Gate-weighted accumulation**: Fuse gate multiplication into the output write-back.
-    9. **Reference: AMD AITER patterns**: AMD's production AITER library uses batched
-       expert execution with block-scale dequant for fused MoE — study that pattern.
+    9. **LDS bank conflict avoidance**: LDS has 32 banks × 4 bytes. Triton handles
+       this via its internal swizzle patterns, but tile sizes that are multiples of
+       32 elements help avoid conflicts with MXFP4 block boundaries.
 
     ### Rules
-    - All input tensors are already on your CUDA device.
+    - All input tensors are already on your GPU device (AMD MI355X via ROCm).
+    - `torch.cuda` APIs work on ROCm via HIP compatibility — use them normally.
     - All weights are stored in MXFP4 format as described above.
     - Activations and router weights are in bfloat16.
     - Define all of your code in one final ```python ``` block.
     - The entrypoint to your code must be named 'custom_kernel'.
-    - You may use Triton, PyTorch, or `torch.compile()`.
+    - You may use Triton (on ROCm), PyTorch, or `torch.compile()`.
     - Do NOT use CUDA-only intrinsics or NVIDIA warp-size assumptions (warp_size=32).
-    - Wavefront size on cDNA4 is 64, not 32.
+    - Wavefront size on cDNA4 is 64, not 32. This affects `num_warps` in Triton:
+      each "warp" in Triton on AMD is actually a wavefront of 64 threads.
+    - Do NOT write inline ISA, HIP C++, or assembly — Triton only.
     - Do NOT import or assume `reference.MoEConfig` is mutable — treat it as read-only.
+    - Triton `tl.dot()` automatically uses MFMA instructions on cDNA4.
+      You do NOT need to call MFMA instructions manually.
 
     Important Triton rules (triton >= 3.1):
     - `tl.load` does not have a `dtype` argument. Never use `tl.load(..., dtype=...)`.
